@@ -47,7 +47,7 @@ interface Stats {
   formationCounts: Record<string, number>;
   formationMix: Record<string, FormationMix>;
   personnelCounts: Record<string, number>;
-  downStats: Record<number, DownStats>;
+  downStats: Record<1 | 2 | 3 | 4, DownStats>;
   scoringPlays: Array<{ quarter: number; time: string; team: string; type: string; description: string; points: number }>;
 }
 
@@ -55,14 +55,14 @@ const RUN_ROW_COLOR = '#EAF7EE';
 const PASS_ROW_COLOR = '#EAF0FF';
 const SPECIAL_ROW_COLOR = '#FFF3E0';
 
-function escapeHtml(input: string | number | undefined | null): string {
+function escapeHtml(input: unknown): string {
   const s = String(input ?? '');
   return s
-    .replace(/&/g, '&')
-    .replace(/</g, '<')
-    .replace(/>/g, '>')
-    .replace(/"/g, '"')
-    .replace(/'/g, '&#x27;');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function formatDate(dateStr?: string): string {
@@ -71,7 +71,7 @@ function formatDate(dateStr?: string): string {
     return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   }
   const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return escapeHtml(dateStr);
+  if (isNaN(d.getTime())) return escapeHtml(String(dateStr));
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
@@ -98,9 +98,10 @@ function pointsForType(t: string | undefined): number {
   if (type.includes('touchdown')) return 6;
   if (type.includes('field goal')) return 3;
   if (type.includes('safety')) return 2;
+  if (type.includes('two-point') || type.includes('two point')) return 2;
+  if (type.includes('2-point')) return 2;
   if (type.includes('extra point')) return 1;
   if (type.includes('1-point')) return 1;
-  if (type.includes('2-point')) return 2;
   return 0;
 }
 
@@ -113,7 +114,7 @@ function summarize(analysis: FootballAnalysis, branding?: TeamBranding): Stats {
   const formationCounts: Record<string, number> = {};
   const formationMix: Record<string, FormationMix> = {};
   const personnelCounts: Record<string, number> = {};
-  const downStats: Record<number, DownStats> = {
+  const downStats: Record<1 | 2 | 3 | 4, DownStats> = {
     1: { count: 0, totalYards: 0, avgYards: 0, successKnown: 0, successes: 0, successRate: 0 },
     2: { count: 0, totalYards: 0, avgYards: 0, successKnown: 0, successes: 0, successRate: 0 },
     3: { count: 0, totalYards: 0, avgYards: 0, successKnown: 0, successes: 0, successRate: 0 },
@@ -138,8 +139,10 @@ function summarize(analysis: FootballAnalysis, branding?: TeamBranding): Stats {
 
     // By quarter
     const q = (play.game_context.quarter ?? 0) as number;
-    if (!playsByQuarter[q]) playsByQuarter[q] = [];
-    playsByQuarter[q].push(play);
+    if (!playsByQuarter[q]) {
+      playsByQuarter[q] = [];
+    }
+    (playsByQuarter[q] as FootballPlay[]).push(play);
 
     // Play type
     const pt = (play.play?.play_type as string) || 'Other';
@@ -149,11 +152,11 @@ function summarize(analysis: FootballAnalysis, branding?: TeamBranding): Stats {
     // Formation + mix
     const form = play.pre_snap?.offense?.formation || 'Unknown';
     formationCounts[form] = (formationCounts[form] || 0) + 1;
-    if (!formationMix[form]) formationMix[form] = { Run: 0, Pass: 0, Other: 0, total: 0 };
-    if (pt === 'Run') formationMix[form].Run++;
-    else if (pt === 'Pass') formationMix[form].Pass++;
-    else formationMix[form].Other++;
-    formationMix[form].total++;
+    const fm = formationMix[form] ?? (formationMix[form] = { Run: 0, Pass: 0, Other: 0, total: 0 });
+    if (pt === 'Run') fm.Run++;
+    else if (pt === 'Pass') fm.Pass++;
+    else fm.Other++;
+    fm.total++;
 
     // Personnel
     const pers = play.pre_snap?.offense?.personnel || 'Unknown';
@@ -163,13 +166,14 @@ function summarize(analysis: FootballAnalysis, branding?: TeamBranding): Stats {
     const down = (play.situation?.down as number) || 0;
     const yds = (play.result?.yards_gained as number) ?? 0;
     const dist = play.situation?.distance as number | undefined;
-    if (down && downStats[down]) {
-      downStats[down].count++;
-      downStats[down].totalYards += (typeof yds === 'number' ? yds : 0);
+    const ds = down && down >= 1 && down <= 4 ? downStats[down as 1 | 2 | 3 | 4] : undefined;
+    if (ds) {
+      ds.count++;
+      ds.totalYards += (typeof yds === 'number' ? yds : 0);
       if (typeof dist === 'number') {
-        downStats[down].successKnown++;
+        ds.successKnown++;
         if ((typeof yds === 'number' ? yds : 0) >= dist) {
-          downStats[down].successes++;
+          ds.successes++;
         }
       }
     }
@@ -193,12 +197,13 @@ function summarize(analysis: FootballAnalysis, branding?: TeamBranding): Stats {
   }
 
   // Compute averages & rates
-  for (const d of [1, 2, 3, 4]) {
-    if (downStats[d].count > 0) {
-      downStats[d].avgYards = +(downStats[d].totalYards / downStats[d].count).toFixed(2);
+  for (const d of [1, 2, 3, 4] as const) {
+    const s = downStats[d];
+    if (s.count > 0) {
+      s.avgYards = +(s.totalYards / s.count).toFixed(2);
     }
-    if (downStats[d].successKnown > 0) {
-      downStats[d].successRate = +((downStats[d].successes * 100) / downStats[d].successKnown).toFixed(1);
+    if (s.successKnown > 0) {
+      s.successRate = +((s.successes * 100) / s.successKnown).toFixed(1);
     }
   }
 
@@ -266,7 +271,7 @@ function generateSummarySectionHTML(stats: Stats): string {
         <table class="compact">
           <thead><tr><th>Down</th><th>Plays</th><th>Avg Yds</th><th>Success</th></tr></thead>
           <tbody>
-            ${[1,2,3,4].map(d => {
+            ${([1,2,3,4] as const).map(d => {
               const s = stats.downStats[d];
               return `<tr><td>${d}</td><td>${s.count}</td><td>${s.avgYards}</td><td>${s.successRate || 0}%</td></tr>`;
             }).join('')}
@@ -279,7 +284,7 @@ function generateSummarySectionHTML(stats: Stats): string {
           <thead><tr><th>Formation</th><th>Plays</th><th>Run</th><th>Pass</th></tr></thead>
           <tbody>
             ${formations.map(([f, c]) => {
-              const mix = stats.formationMix[f] || { Run: 0, Pass: 0, Other: 0, total: 0 };
+              const mix: FormationMix = stats.formationMix[f] ?? { Run: 0, Pass: 0, Other: 0, total: 0 };
               return `<tr><td>${escapeHtml(f)}</td><td>${c}</td><td>${mix.Run}</td><td>${mix.Pass}</td></tr>`;
             }).join('')}
           </tbody>
@@ -306,9 +311,8 @@ function playRowClass(type: string | undefined): string {
   return 'row-special';
 }
 
-function generateQuarterSectionHTML(quarter: number, plays: FootballPlay[]): string {
-  if (!plays.length) return '';
-  const rows = plays.map((p, idx) => {
+function renderPlaysTable(plays: FootballPlay[]): string {
+  const rows = (plays || []).map((p, idx) => {
     const type = p.play?.play_type;
     const klass = playRowClass(type);
     const id = escapeHtml(p.play_id);
@@ -317,11 +321,14 @@ function generateQuarterSectionHTML(quarter: number, plays: FootballPlay[]): str
     const def = escapeHtml(p.game_context.defense_team);
     const dn = (p.situation?.down as number | undefined);
     const dist = (p.situation?.distance as number | undefined);
-    const dd = dn ? `${dn}&${typeof dist === 'number' ? dist : '-'}` : '-';
+    const ddRaw = dn ? `${dn} & ${typeof dist === 'number' ? dist : '-'}` : '-';
+    const dd = escapeHtml(ddRaw);
     const yl = escapeHtml(p.situation?.yard_line || '');
     const hash = escapeHtml((p.situation?.hash_mark as string | undefined) || '');
     const form = escapeHtml(p.pre_snap?.offense?.formation || '');
-    const concept = type === 'Run' ? escapeHtml(p.play?.run_details?.concept || '') : escapeHtml(p.play?.pass_details?.concept || '');
+    const concept = type === 'Run'
+      ? escapeHtml(p.play?.run_details?.concept || '')
+      : escapeHtml(p.play?.pass_details?.concept || '');
     const yards = (typeof p.result?.yards_gained === 'number') ? p.result.yards_gained : 0;
     const outcome = escapeHtml(p.result?.outcome || '');
     return `
@@ -335,36 +342,55 @@ function generateQuarterSectionHTML(quarter: number, plays: FootballPlay[]): str
         <td>${hash}</td>
         <td>${form}</td>
         <td>${escapeHtml(type || '')}</td>
+        <td>${concept}</td>
         <td class="num">${yards}</td>
         <td class="outcome">${outcome}</td>
       </tr>`;
   }).join('');
 
   return `
+    <table class="plays">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Play ID</th>
+          <th>Time</th>
+          <th>O vs D</th>
+          <th>Dn&Dist</th>
+          <th>Yard Line</th>
+          <th>Hash</th>
+          <th>Formation</th>
+          <th>Type</th>
+          <th>Concept</th>
+          <th class="num">Yds</th>
+          <th>Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+}
+
+function generatePlaysSectionHTML(title: string, plays: FootballPlay[]): string {
+  if (!plays || plays.length === 0) return '';
+  return `
     <section class="quarter-section">
-      <h2>${ordinal(quarter)} Quarter</h2>
-      <table class="plays">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Play ID</th>
-            <th>Time</th>
-            <th>O vs D</th>
-            <th>Dn&Dist</th>
-            <th>Yard Line</th>
-            <th>Hash</th>
-            <th>Formation</th>
-            <th>Type</th>
-            <th class="num">Yds</th>
-            <th>Outcome</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows}
-        </tbody>
-      </table>
+      <h2>${escapeHtml(title)}</h2>
+      ${renderPlaysTable(plays)}
     </section>
   `;
+}
+
+function generateQuarterSectionHTML(quarter: number, plays: FootballPlay[]): string {
+  if (!plays.length) return '';
+  return generatePlaysSectionHTML(`${ordinal(quarter)} Quarter`, plays);
+}
+
+function generateUnknownQuarterSectionHTML(plays: FootballPlay[]): string {
+  if (!plays.length) return '';
+  return generatePlaysSectionHTML('Unknown Quarter', plays);
 }
 
 function generateScoringSummaryHTML(stats: Stats): string {
@@ -491,7 +517,7 @@ function baseStyles(teamAColor: string, teamBColor: string): string {
   }
   table.plays th { background: #f1f3f5; }
   td.num { text-align: right; }
-  td.outcome { width: 45%; }
+  td.outcome { width: 40%; }
   tr.row-run td { background-color: var(--runRow); }
   tr.row-pass td { background-color: var(--passRow); }
   tr.row-special td { background-color: var(--specialRow); }
@@ -507,6 +533,12 @@ function baseStyles(teamAColor: string, teamBColor: string): string {
   @page {
     size: A4;
     margin: 20mm 12mm;
+    /* If the UA supports margin boxes, render page numbers via CSS counters */
+    @bottom-right {
+      content: "Page " counter(page) " of " counter(pages);
+      font-size: 10px;
+      color: var(--muted);
+    }
   }
   `;
 }
@@ -515,13 +547,23 @@ function generateDetailedHTML(analysis: FootballAnalysis, options?: PDFOptions):
   const stats = summarize(analysis, options?.branding);
   const dateStr = formatDate(options?.gameDate);
   const title = escapeHtml(options?.reportTitle || 'Football Game Analysis Report');
+  const generatedAt = new Date().toLocaleString();
+  const colorA = stats.teamColors[stats.teamA] ?? '#1F77B4';
+  const colorB = stats.teamColors[stats.teamB] ?? '#D62728';
 
   const teamA = escapeHtml(stats.teamA);
   const teamB = escapeHtml(stats.teamB);
   const scoreA = stats.score[stats.teamA] ?? 0;
   const scoreB = stats.score[stats.teamB] ?? 0;
 
-  const qSections = [1,2,3,4].map(q => generateQuarterSectionHTML(q, stats.playsByQuarter[q] || [])).join('');
+  const qSections = ([
+    1, 2, 3, 4
+  ] as const).map(q => generateQuarterSectionHTML(q, (stats.playsByQuarter[q] ?? []) as FootballPlay[])).join('');
+  const unknownPlays = (analysis.plays || []).filter(p => {
+    const q = p.game_context?.quarter;
+    return !q || q === 0;
+  });
+  const unknownSection = generateUnknownQuarterSectionHTML(unknownPlays);
 
   const html = `
   <!DOCTYPE html>
@@ -529,7 +571,7 @@ function generateDetailedHTML(analysis: FootballAnalysis, options?: PDFOptions):
   <head>
     <meta charset="utf-8"/>
     <title>${title}</title>
-    <style>${baseStyles(stats.teamColors[stats.teamA], stats.teamColors[stats.teamB])}</style>
+    <style>${baseStyles(colorA, colorB)}</style>
   </head>
   <body>
     <header>
@@ -538,7 +580,7 @@ function generateDetailedHTML(analysis: FootballAnalysis, options?: PDFOptions):
         <div class="meta">
           <div><strong>Teams:</strong> ${teamA} vs ${teamB}</div>
           <div><strong>Date:</strong> ${dateStr}</div>
-          ${options?.location ? `<div><strong>Location:</strong> ${escapeHtml(options.location)}</div>` : ''}
+          ${options?.location ? `<div><strong>Location:</strong> ${escapeHtml(options?.location ?? '')}</div>` : ''}
         </div>
         <div class="scoreline">
           <span class="teams">${teamA} - ${teamB}</span>
@@ -560,12 +602,13 @@ function generateDetailedHTML(analysis: FootballAnalysis, options?: PDFOptions):
 
     <section>
       <h2>Play-by-Play</h2>
-      <p class="muted">Rows are color-coded by play type: Run (green), Pass (blue), Special/Other (amber).</p>
+      <p class="muted">Rows are color-coded by play type: Run (green), Pass (blue), Special/Other (amber). The Concept column reflects run/pass concept where identified.</p>
       ${qSections}
+      ${unknownSection}
     </section>
 
     <footer>
-      Generated by Football Video Analysis Tool
+      Generated by Football Video Analysis Tool • Generated: ${escapeHtml(generatedAt)}
     </footer>
   </body>
   </html>
@@ -577,6 +620,9 @@ function generateSummaryHTML(analysis: FootballAnalysis, options?: PDFOptions): 
   const stats = summarize(analysis, options?.branding);
   const dateStr = formatDate(options?.gameDate);
   const title = escapeHtml(options?.reportTitle || 'Football Game Summary Report');
+  const generatedAt = new Date().toLocaleString();
+  const colorA = stats.teamColors[stats.teamA] ?? '#1F77B4';
+  const colorB = stats.teamColors[stats.teamB] ?? '#D62728';
 
   const teamA = escapeHtml(stats.teamA);
   const teamB = escapeHtml(stats.teamB);
@@ -589,7 +635,7 @@ function generateSummaryHTML(analysis: FootballAnalysis, options?: PDFOptions): 
   <head>
     <meta charset="utf-8"/>
     <title>${title}</title>
-    <style>${baseStyles(stats.teamColors[stats.teamA], stats.teamColors[stats.teamB])}</style>
+    <style>${baseStyles(colorA, colorB)}</style>
   </head>
   <body>
     <header>
@@ -598,7 +644,7 @@ function generateSummaryHTML(analysis: FootballAnalysis, options?: PDFOptions): 
         <div class="meta">
           <div><strong>Teams:</strong> ${teamA} vs ${teamB}</div>
           <div><strong>Date:</strong> ${dateStr}</div>
-          ${options?.location ? `<div><strong>Location:</strong> ${escapeHtml(options.location)}</div>` : ''}
+          ${options?.location ? `<div><strong>Location:</strong> ${escapeHtml(options?.location ?? '')}</div>` : ''}
         </div>
         <div class="scoreline">
           <span class="teams">${teamA} - ${teamB}</span>
@@ -619,7 +665,7 @@ function generateSummaryHTML(analysis: FootballAnalysis, options?: PDFOptions): 
     </section>
 
     <footer>
-      Generated by Football Video Analysis Tool
+      Generated by Football Video Analysis Tool • Generated: ${escapeHtml(generatedAt)}
     </footer>
   </body>
   </html>
@@ -637,6 +683,16 @@ export async function generatePDFReports(
   const detailedHTML = generateDetailedHTML(analysis, options);
   const summaryHTML = generateSummaryHTML(analysis, options);
 
+  // Timestamp and page numbers in header/footer templates (reliable in Chromium)
+  const generatedAt = new Date().toLocaleString();
+  const headerTemplate = '<div style="font-size:8px; color: transparent;">.</div>';
+  const footerTemplate = `
+    <div style="font-size:10px; width: 100%; padding: 0 12px; color: #666; display: flex; justify-content: space-between;">
+      <span>Generated: ${escapeHtml(generatedAt)}</span>
+      <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
+    </div>
+  `;
+
   const browser = await puppeteer.launch({ headless: true });
   try {
     // Detailed
@@ -646,7 +702,10 @@ export async function generatePDFReports(
       path: detailedPath,
       printBackground: true,
       format: 'A4',
-      margin: { top: '20mm', bottom: '20mm', left: '12mm', right: '12mm' }
+      displayHeaderFooter: true,
+      headerTemplate,
+      footerTemplate,
+      margin: { top: '20mm', bottom: '25mm', left: '12mm', right: '12mm' }
     });
     await page1.close();
 
@@ -657,7 +716,10 @@ export async function generatePDFReports(
       path: summaryPath,
       printBackground: true,
       format: 'A4',
-      margin: { top: '20mm', bottom: '20mm', left: '12mm', right: '12mm' }
+      displayHeaderFooter: true,
+      headerTemplate,
+      footerTemplate,
+      margin: { top: '20mm', bottom: '25mm', left: '12mm', right: '12mm' }
     });
     await page2.close();
   } finally {

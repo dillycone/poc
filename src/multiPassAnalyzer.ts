@@ -13,9 +13,271 @@ import {
 
 type GenModel = ReturnType<GoogleGenerativeAI['getGenerativeModel']>;
 
-function save(name: string, data: any) {
+function save(name: string, data: unknown) {
   writeFileSync(name, JSON.stringify(data, null, 2), 'utf8');
 }
+
+/* === Structured Output Schemas === */
+const PASS1_SCHEMA: any = {
+  type: 'object',
+  properties: {
+    plays: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          play_id: { type: 'string' },
+          start_time: { type: 'string' },
+          end_time: { type: 'string' },
+          quarter: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+          game_clock: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          offense_team: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          defense_team: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          confidence: { type: 'number' },
+          notes: { anyOf: [{ type: 'string' }, { type: 'null' }] }
+        },
+        required: ['play_id', 'start_time', 'end_time'],
+        additionalProperties: false
+      }
+    },
+    video_uri: { type: 'string' }
+  },
+  required: ['plays', 'video_uri'],
+  additionalProperties: false
+};
+
+const PASS2_SCHEMA: any = {
+  type: 'object',
+  properties: {
+    play_id: { type: 'string' },
+    video_timestamps: {
+      type: 'object',
+      properties: {
+        start_time: { type: 'string' },
+        end_time: { type: 'string' }
+      },
+      required: ['start_time', 'end_time'],
+      additionalProperties: false
+    },
+    game_context: {
+      type: 'object',
+      properties: {
+        quarter: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+        game_clock: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        offense_team: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        defense_team: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        offense_score: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+        defense_score: { anyOf: [{ type: 'number' }, { type: 'null' }] }
+      },
+      required: ['quarter', 'game_clock', 'offense_team', 'defense_team'],
+      additionalProperties: false
+    },
+    situation: {
+      type: 'object',
+      properties: {
+        down: { anyOf: [{ type: 'integer', minimum: 1, maximum: 4 }, { type: 'null' }] },
+        distance: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+        yard_line: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        hash_mark: {
+          anyOf: [
+            { type: 'string', enum: ['Left', 'Middle', 'Right'] },
+            { type: 'null' }
+          ]
+        }
+      },
+      additionalProperties: false
+    },
+    pre_snap: {
+      type: 'object',
+      properties: {
+        offense: {
+          type: 'object',
+          properties: {
+            personnel: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            formation: {
+              anyOf: [
+                { type: 'string', enum: ['Shotgun', 'Pistol', 'I-Formation', 'Singleback', 'Empty', 'Wildcat', 'Under Center'] },
+                { type: 'null' }
+              ]
+            },
+            backfield_set: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            strength: {
+              anyOf: [
+                { type: 'string', enum: ['Left', 'Right', 'Balanced'] },
+                { type: 'null' }
+              ]
+            }
+          },
+          additionalProperties: false
+        },
+        defense: {
+          type: 'object',
+          properties: {
+            front: {
+              anyOf: [
+                { type: 'string', enum: ['4-3', '3-4', '4-2-5', '3-3-5', 'Bear', 'Okie'] },
+                { type: 'null' }
+              ]
+            },
+            players_in_box: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+            coverage_shell: {
+              anyOf: [
+                { type: 'string', enum: ['Cover 0', 'Cover 1', 'Cover 2', 'Cover 3', 'Cover 4', 'Cover 6', 'Man'] },
+                { type: 'null' }
+              ]
+            }
+          },
+          additionalProperties: false
+        }
+      },
+      additionalProperties: false
+    },
+    play: {
+      type: 'object',
+      properties: {
+        play_type: { type: 'string', enum: ['Run', 'Pass', 'Punt', 'Field Goal', 'Kickoff', 'Special'] },
+        run_details: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: {
+                concept: {
+                  anyOf: [
+                    { type: 'string', enum: ['Inside Zone', 'Outside Zone', 'Power', 'Counter', 'Sweep', 'Draw', 'Toss', 'Trap', 'QB Keep'] },
+                    { type: 'null' }
+                  ]
+                },
+                ball_carrier_jersey: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+                direction: { anyOf: [{ type: 'string' }, { type: 'null' }] }
+              },
+              additionalProperties: false
+            },
+            { type: 'null' }
+          ]
+        },
+        pass_details: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: {
+                concept: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+                protection: {
+                  anyOf: [
+                    { type: 'string', enum: ['Slide', 'Man', 'Play Action', 'Rollout', 'Sprint Out', 'Quick'] },
+                    { type: 'null' }
+                  ]
+                },
+                qb_jersey: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+                intended_receiver_jersey: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+                pass_type: {
+                  anyOf: [
+                    { type: 'string', enum: ['Screen', 'Quick Pass', 'Dropback'] },
+                    { type: 'null' }
+                  ]
+                }
+              },
+              additionalProperties: false
+            },
+            { type: 'null' }
+          ]
+        }
+      },
+      required: ['play_type'],
+      additionalProperties: false
+    },
+    result: {
+      type: 'object',
+      properties: {
+        outcome: { type: 'string' },
+        yards_gained: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+        tacklers_jersey: {
+          anyOf: [
+            { type: 'array', items: { type: 'integer' } },
+            { type: 'null' }
+          ]
+        },
+        turnover: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: {
+                type: {
+                  anyOf: [
+                    { type: 'string', enum: ['Fumble', 'Interception'] },
+                    { type: 'null' }
+                  ]
+                },
+                forced_by_jersey: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+                recovered_by_jersey: { anyOf: [{ type: 'integer' }, { type: 'null' }] }
+              },
+              additionalProperties: false
+            },
+            { type: 'null' }
+          ]
+        },
+        penalty: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: {
+                flag_thrown: { anyOf: [{ type: 'boolean' }, { type: 'null' }] },
+                team: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+                infraction: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+                enforcement: {
+                  anyOf: [
+                    { type: 'string', enum: ['Accepted', 'Declined', 'Offsetting'] },
+                    { type: 'null' }
+                  ]
+                }
+              },
+              additionalProperties: false
+            },
+            { type: 'null' }
+          ]
+        },
+        scoring_play: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: {
+                is_score: { type: 'boolean' },
+                type: {
+                  anyOf: [
+                    { type: 'string', enum: ['Touchdown', 'Field Goal', 'Safety', 'Extra Point', 'Two-Point Conversion'] },
+                    { type: 'null' }
+                  ]
+                },
+                player_jersey: { anyOf: [{ type: 'integer' }, { type: 'null' }] }
+              },
+              required: ['is_score'],
+              additionalProperties: false
+            },
+            { type: 'null' }
+          ]
+        }
+      },
+      required: ['outcome'],
+      additionalProperties: false
+    },
+    fieldConfidences: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          value: {},
+          confidence: { type: 'number' },
+          source: { type: 'string', enum: ['pass1', 'pass2', 'pass3'] },
+          rationale: { anyOf: [{ type: 'string' }, { type: 'null' }] }
+        },
+        required: ['path', 'confidence', 'source'],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ['play_id', 'video_timestamps', 'game_context', 'play', 'result'],
+  additionalProperties: false
+};
 
 function tryParseJSON(text: string): any {
   try {
@@ -25,7 +287,11 @@ function tryParseJSON(text: string): any {
       .trim()
       .replace(/^\s*```(?:json)?\s*/i, '')
       .replace(/\s*```\s*$/i, '');
-    return JSON.parse(cleaned);
+    try {
+      return JSON.parse(cleaned);
+    } catch {
+      return {};
+    }
   }
 }
 
@@ -97,6 +363,14 @@ function timeToSeconds(s: string): number {
   if (parts.length === 2) return (parts[0] || 0) * 60 + (parts[1] || 0);
   return Number.isFinite(parts[0]) ? (parts[0] || 0) : 0;
 }
+
+function hhmmssToSec(s: string): number {
+  const p = s.split(':').map(n => parseInt(n, 10));
+  if (p.length === 3) return p[0] * 3600 + p[1] * 60 + (p[2] || 0);
+  if (p.length === 2) return p[0] * 60 + (p[1] || 0);
+  return Number.isFinite(p[0]) ? (p[0] || 0) : 0;
+}
+
 function byStart(a: { start_time: string }, b: { start_time: string }) {
   return timeToSeconds(a.start_time) - timeToSeconds(b.start_time);
 }
@@ -110,6 +384,54 @@ function getModel(apiKey: string, modelName: string = 'gemini-2.5-pro'): GenMode
       responseMimeType: 'application/json'
     }
   });
+}
+
+/* === Content builders for GenAI API === */
+function makeVideoPart(videoUri: string, startSec?: number, endSec?: number, fps: number = 1): any {
+  const part: any = {
+    fileData: { fileUri: videoUri, mimeType: 'video/*' }
+  };
+  if (
+    typeof startSec === 'number' &&
+    typeof endSec === 'number' &&
+    Number.isFinite(startSec) &&
+    Number.isFinite(endSec) &&
+    endSec > startSec
+  ) {
+    part.videoMetadata = {
+      startOffset: `${Math.max(0, Math.floor(startSec))}s`,
+      endOffset: `${Math.max(0, Math.floor(endSec))}s`,
+      fps
+    };
+  }
+  return part;
+}
+
+function makeTextPart(text: string): any {
+  return { text };
+}
+
+function makeUserContent(parts: any[]): any {
+  return { role: 'user', parts };
+}
+
+/* === Helper to robustly extract text from GenAI responses === */
+async function readResponseText(genResult: any): Promise<string> {
+  try {
+    const resp = await genResult?.response;
+    if (resp && typeof resp.text === 'function') {
+      const t = resp.text();
+      return typeof t === 'string' ? t : String(t);
+    }
+    // fallback: some SDK variants may expose text directly
+    if (typeof genResult?.text === 'function') {
+      const t2 = genResult.text();
+      return typeof t2 === 'string' ? t2 : String(t2);
+    }
+    return JSON.stringify(resp ?? genResult ?? '');
+  } catch {
+    return '';
+  }
 }
 
 /* === Pass 1: detect plays + coarse metadata === */
@@ -140,24 +462,30 @@ Rules:
 - If unsure, use null and lower confidence.
 `;
 
-  const result = await retryWithBackoff(
-    () =>
-      model.generateContent([
-        { fileData: { fileUri: videoUri, mimeType: 'video/*' } },
-        { text: prompt }
-      ]),
+  const request = {
+    contents: [
+      makeUserContent([
+        makeVideoPart(videoUri),
+        makeTextPart(prompt)
+      ])
+    ],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseSchema: PASS1_SCHEMA
+    }
+  } as any;
+
+  const genResult = await retryWithBackoff(
+    () => model.generateContent(request),
     DEFAULT_RATE_LIMIT,
     'Pass1'
   );
 
-  const text = (await result.response).text();
-  const json = tryParseJSON(text);
+  const text = await readResponseText(genResult);
+  const json = tryParseJSON(text) || {};
+  const plays = Array.isArray(json.plays) ? json.plays.slice().sort(byStart) : [];
 
-  if (Array.isArray(json.plays)) {
-    json.plays.sort(byStart);
-  }
-
-  const overview: Pass1Overview = { plays: json.plays || [], video_uri: videoUri };
+  const overview: Pass1Overview = { plays, video_uri: videoUri };
   return overview;
 }
 
@@ -173,6 +501,10 @@ export async function runPass2Detailed(
 
   for (let idx = 0; idx < p1.plays.length; idx++) {
     const marker = p1.plays[idx];
+    if (!marker) {
+      // Safety under noUncheckedIndexedAccess
+      continue;
+    }
 
     // Fixed inter-request delay with jitter (skip before first)
     if (idx > 0 && (cfg.delayBetweenRequests ?? 0) > 0) {
@@ -237,7 +569,7 @@ Return JSON strictly matching:
     "tacklers_jersey": number[] | null,
     "turnover": { "type": "Fumble"|"Interception" | null } | null,
     "penalty": { "flag_thrown": boolean } | null,
-    "scoring_play": { "is_score": boolean, "type": "Touchdown"|"Field Goal"|"Safety"|"Extra Point" | null, "player_jersey": number | null } | null
+    "scoring_play": { "is_score": boolean, "type": "Touchdown"|"Field Goal"|"Safety"|"Extra Point"|"Two-Point Conversion" | null, "player_jersey": number | null } | null
   },
   "fieldConfidences": [
     { "path": "play.pass_details.concept", "value": "...", "confidence": 0.78, "source": "pass2", "rationale": "why" }
@@ -247,43 +579,84 @@ Return JSON strictly matching:
 Be conservative; set null for unknowns.
 `;
 
-    const result = await retryWithBackoff(
-      () =>
-        model.generateContent([
-          { fileData: { fileUri: videoUri, mimeType: 'video/*' } },
-          { text: prompt }
-        ]),
+    const startS = hhmmssToSec(marker.start_time);
+    const endS = hhmmssToSec(marker.end_time);
+    if (!Number.isFinite(startS) || !Number.isFinite(endS) || endS <= startS) {
+      console.warn(`Skipping invalid segment for ${marker.play_id}: ${marker.start_time}–${marker.end_time}`);
+      continue;
+    }
+
+    const request = {
+      contents: [
+        makeUserContent([
+          makeVideoPart(videoUri, startS, endS, 1),
+          makeTextPart(prompt)
+        ])
+      ],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: PASS2_SCHEMA
+      }
+    } as any;
+
+    const genResult = await retryWithBackoff(
+      () => model.generateContent(request),
       cfg,
       `Pass2 ${marker.play_id}`
     );
 
-    const text = (await result.response).text();
-    const json = tryParseJSON(text);
+    const text = await readResponseText(genResult);
+    const json = tryParseJSON(text) || {};
+
+    // Safe guards for nested objects that may be missing
+    const gc: any = (json && typeof json === 'object' && json.game_context && typeof json.game_context === 'object')
+      ? json.game_context
+      : {};
+    const sit: any = (json && typeof json === 'object' && json.situation && typeof json.situation === 'object')
+      ? json.situation
+      : null;
+    const pre: any = (json && typeof json === 'object' && json.pre_snap && typeof json.pre_snap === 'object')
+      ? json.pre_snap
+      : null;
+    const pl: any = (json && typeof json === 'object' && json.play && typeof json.play === 'object')
+      ? json.play
+      : null;
+    const res: any = (json && typeof json === 'object' && json.result && typeof json.result === 'object')
+      ? json.result
+      : null;
+
+    // Fallbacks from pass1 marker with safe narrowing
+    const fallbackQuarter = typeof marker.quarter === 'number' ? marker.quarter : 0;
+    const fallbackClock = typeof marker.game_clock === 'string' ? marker.game_clock : null;
+    const fallbackOffense = typeof marker.offense_team === 'string' ? marker.offense_team : '';
+    const fallbackDefense = typeof marker.defense_team === 'string' ? marker.defense_team : '';
 
     const play: FootballPlay = {
-      play_id: json.play_id || marker.play_id,
+      play_id: (json && typeof json === 'object' && typeof (json as any).play_id === 'string')
+        ? (json as any).play_id
+        : marker.play_id,
       video_timestamps: {
         start_time: marker.start_time,
         end_time: marker.end_time
       },
       game_context: {
-        quarter: json.game_context?.quarter ?? marker.quarter ?? 0,
-        game_clock: json.game_context?.game_clock ?? marker.game_clock ?? null,
-        offense_team: json.game_context?.offense_team ?? marker.offense_team ?? '',
-        defense_team: json.game_context?.defense_team ?? marker.defense_team ?? '',
-        offense_score: json.game_context?.offense_score ?? 0,
-        defense_score: json.game_context?.defense_score ?? 0
+        quarter: (gc && typeof gc.quarter === 'number') ? gc.quarter : fallbackQuarter,
+        game_clock: (gc && (typeof gc.game_clock === 'string' || gc.game_clock === null)) ? gc.game_clock : fallbackClock,
+        offense_team: (gc && typeof gc.offense_team === 'string') ? gc.offense_team : fallbackOffense,
+        defense_team: (gc && typeof gc.defense_team === 'string') ? gc.defense_team : fallbackDefense,
+        offense_score: (gc && typeof gc.offense_score === 'number') ? gc.offense_score : 0,
+        defense_score: (gc && typeof gc.defense_score === 'number') ? gc.defense_score : 0
       },
-      situation: json.situation || { down: 1, distance: 10, yard_line: 'OWN 25' },
-      pre_snap: json.pre_snap || {},
-      play: json.play || { play_type: 'Special' },
-      result: json.result || { outcome: '', yards_gained: 0 }
+      situation: sit || { down: 1, distance: 10, yard_line: 'OWN 25' },
+      pre_snap: pre || {},
+      play: pl || { play_type: 'Special' },
+      result: res || { outcome: '', yards_gained: 0 }
     };
 
     out.push({
       play_id: play.play_id,
       analysis: play,
-      fieldConfidences: Array.isArray(json.fieldConfidences) ? json.fieldConfidences : []
+      fieldConfidences: Array.isArray((json as any).fieldConfidences) ? (json as any).fieldConfidences : []
     });
 
     // Save partial results after each play to aid resume/debugging
@@ -333,32 +706,47 @@ Return JSON:
 Only include changes with confidence >= 0.6.
 `;
 
-  const result = await retryWithBackoff(
-    () =>
-      model.generateContent([
-        { fileData: { fileUri: videoUri, mimeType: 'video/*' } },
-        { text: "COMPACT_INPUT:\n" + JSON.stringify(compact, null, 2) },
-        { text: prompt }
-      ]),
+  const request = {
+    contents: [
+      makeUserContent([
+        makeVideoPart(videoUri),
+        makeTextPart('COMPACT_INPUT:\n' + JSON.stringify(compact, null, 2)),
+        makeTextPart(prompt)
+      ])
+    ],
+    generationConfig: {
+      responseMimeType: 'application/json'
+    }
+  } as any;
+
+  const genResult = await retryWithBackoff(
+    () => model.generateContent(request),
     DEFAULT_RATE_LIMIT,
     'Pass3'
   );
 
-  const text = (await result.response).text();
-  const verifications: Pass3Verification[] = tryParseJSON(text);
+  const text = await readResponseText(genResult);
+  const parsed = tryParseJSON(text);
+  const verifications: Pass3Verification[] = Array.isArray(parsed) ? parsed : [];
   return verifications;
 }
 
 /* === Helpers for aggregation === */
 function setDeep(obj: any, path: string, value: any) {
-  const parts = path.split('.');
-  let curr = obj;
-  for (let i = 0; i < parts.length - 1; i++) {
-    const p = parts[i];
-    if (!(p in curr) || typeof curr[p] !== 'object' || curr[p] === null) curr[p] = {};
-    curr = curr[p];
+  const parts = path.split('.').filter(Boolean);
+  let curr: any = obj;
+  for (let i = 0; i < Math.max(0, parts.length - 1); i++) {
+    const key = parts[i]!;
+    if (typeof curr !== 'object' || curr === null) break;
+    if (!(key in curr) || typeof (curr as any)[key] !== 'object' || (curr as any)[key] === null) {
+      (curr as any)[key] = {};
+    }
+    curr = (curr as any)[key];
   }
-  curr[parts[parts.length - 1]] = value;
+  const lastKey = parts[parts.length - 1];
+  if (lastKey != null) {
+    (curr as any)[lastKey] = value;
+  }
 }
 
 function applyVerification(play: FootballPlay, ver: Pass3Verification, options?: AggregationOptions) {

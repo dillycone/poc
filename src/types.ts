@@ -79,7 +79,7 @@ export interface Penalty {
 
 export interface ScoringPlay {
   is_score?: boolean;
-  type?: "Touchdown" | "Field Goal" | "Safety" | "Extra Point";
+  type?: "Touchdown" | "Field Goal" | "Safety" | "Extra Point" | "Two-Point Conversion";
   player_jersey?: number;
 }
 

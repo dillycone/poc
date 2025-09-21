@@ -13,10 +13,9 @@ load_dotenv()
 
 
 def save_binary_file(file_name, data):
-    f = open(file_name, "wb")
-    f.write(data)
-    f.close()
-    print(f"File saved to to: {file_name}")
+    with open(file_name, "wb") as f:
+        f.write(data)
+    print(f"File saved to: {file_name}")
 
 
 def generate():
@@ -46,7 +45,7 @@ def generate():
         response_modalities=[
             "TEXT",
         ],
-        max_output_tokens=200000,
+        max_output_tokens=4096,
     )
 
     file_index = 0
@@ -65,9 +64,10 @@ def generate():
             file_name = f"ENTER_FILE_NAME_{file_index}"
             file_index += 1
             inline_data = chunk.candidates[0].content.parts[0].inline_data
-            data_buffer = inline_data.data
+            data_b64 = inline_data.data
+            data_bytes = base64.b64decode(data_b64)
             file_extension = mimetypes.guess_extension(inline_data.mime_type)
-            save_binary_file(f"{file_name}{file_extension}", data_buffer)
+            save_binary_file(f"{file_name}{file_extension}", data_bytes)
         else:
             print(chunk.text)
 
