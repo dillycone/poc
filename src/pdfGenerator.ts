@@ -1,4 +1,5 @@
 import puppeteer from 'puppeteer';
+import type { Browser, LaunchOptions } from 'puppeteer';
 import path from 'path';
 import { FootballAnalysis, FootballPlay } from './types';
 
@@ -65,6 +66,10 @@ function escapeHtml(input: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
+function resolveColor(value: string | undefined, fallback: string): string {
+  return typeof value === 'string' && value.length > 0 ? value : fallback;
+}
+
 function formatDate(dateStr?: string): string {
   if (!dateStr) {
     const d = new Date();
@@ -78,7 +83,8 @@ function formatDate(dateStr?: string): string {
 function ordinal(n: number): string {
   const s = ['th', 'st', 'nd', 'rd'];
   const v = n % 100;
-  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+  const suffix = s[(v - 20) % 10] ?? s[v] ?? s[0] ?? 'th';
+  return `${n}${suffix}`;
 }
 
 function deriveScoringTeam(play: FootballPlay): string {
@@ -215,8 +221,12 @@ function summarize(analysis: FootballAnalysis, branding?: TeamBranding): Stats {
   // Colors
   const defaultPalette = ['#1F77B4', '#D62728', '#2CA02C', '#9467BD', '#FF7F0E'];
   const teamColors: Record<string, string> = {};
-  teamColors[teamA] = branding?.[teamA]?.primary || defaultPalette[0];
-  teamColors[teamB] = branding?.[teamB]?.primary || defaultPalette[1];
+  const teamAColor = branding?.[teamA]?.primary;
+  const teamBColor = branding?.[teamB]?.primary;
+  const fallbackTeamA = defaultPalette[0] ?? '#1F77B4';
+  const fallbackTeamB = defaultPalette[1] ?? '#D62728';
+  teamColors[teamA] = resolveColor(teamAColor, fallbackTeamA);
+  teamColors[teamB] = resolveColor(teamBColor, fallbackTeamB);
 
   return {
     teamA,
@@ -693,8 +703,52 @@ export async function generatePDFReports(
     </div>
   `;
 
-  const browser = await puppeteer.launch({ headless: true });
+  const sandboxEnv = process.env.PUPPETEER_NO_SANDBOX?.trim().toLowerCase();
+  const disableSandbox = sandboxEnv === '1' || sandboxEnv === 'true' || sandboxEnv === 'yes';
+
+  const args: string[] = [];
+  if (disableSandbox) {
+    args.push('--no-sandbox', '--disable-setuid-sandbox');
+  }
+
+  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  const headlessEnv = process.env.PUPPETEER_HEADLESS?.trim().toLowerCase();
+  let headlessOption: boolean | 'shell' | undefined;
+  if (headlessEnv) {
+    if (['false', '0', 'no'].includes(headlessEnv)) {
+      headlessOption = false;
+    } else if (headlessEnv === 'shell') {
+      headlessOption = 'shell';
+    } else {
+      headlessOption = true;
+    }
+  }
+
+  const launchOptions: LaunchOptions & { headless?: boolean | 'shell' } = {};
+  if (args.length > 0) {
+    launchOptions.args = args;
+  }
+  if (executablePath) {
+    launchOptions.executablePath = executablePath;
+  }
+  if (typeof headlessOption !== 'undefined') {
+    launchOptions.headless = headlessOption;
+  }
+
+  let browser: Browser | null = null;
   try {
+    try {
+      browser = await puppeteer.launch(launchOptions);
+    } catch (err) {
+      const guidance = 'Set PUPPETEER_EXECUTABLE_PATH to a Chrome/Chromium binary or install dependencies for the bundled Chromium.';
+      const details = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to launch Chromium via Puppeteer. ${guidance}\nOriginal error: ${details}`);
+    }
+
+    if (!browser) {
+      throw new Error('Puppeteer.launch returned no browser instance.');
+    }
+
     // Detailed
     const page1 = await browser.newPage();
     await page1.setContent(detailedHTML, { waitUntil: 'networkidle0' });
@@ -723,7 +777,9 @@ export async function generatePDFReports(
     });
     await page2.close();
   } finally {
-    await browser.close();
+    if (browser) {
+      await browser.close();
+    }
   }
 
   return { detailedPath, summaryPath };

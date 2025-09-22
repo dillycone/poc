@@ -8,7 +8,8 @@ import {
   Pass3Verification,
   MultiPassArtifacts,
   AggregationOptions,
-  RateLimitConfig
+  RateLimitConfig,
+  PlayMarker
 } from './types';
 
 type GenModel = ReturnType<GoogleGenerativeAI['getGenerativeModel']>;
@@ -356,23 +357,136 @@ async function retryWithBackoff<T>(
 }
 
 /* === Time utilities === */
+function safePart(value: number | undefined): number {
+  return Number.isFinite(value) ? (value as number) : 0;
+}
+
 function timeToSeconds(s: string): number {
   if (!s) return 0;
-  const parts = s.split(':').map(n => parseInt(n, 10));
-  if (parts.length === 3) return (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
-  if (parts.length === 2) return (parts[0] || 0) * 60 + (parts[1] || 0);
-  return Number.isFinite(parts[0]) ? (parts[0] || 0) : 0;
+  const parts = s.split(':').map(n => Number.parseInt(n, 10));
+  if (parts.length === 3) {
+    const [h = 0, m = 0, sec = 0] = parts;
+    return safePart(h) * 3600 + safePart(m) * 60 + safePart(sec);
+  }
+  if (parts.length === 2) {
+    const [m = 0, sec = 0] = parts;
+    return safePart(m) * 60 + safePart(sec);
+  }
+  const [only = 0] = parts;
+  return safePart(only);
 }
 
 function hhmmssToSec(s: string): number {
-  const p = s.split(':').map(n => parseInt(n, 10));
-  if (p.length === 3) return p[0] * 3600 + p[1] * 60 + (p[2] || 0);
-  if (p.length === 2) return p[0] * 60 + (p[1] || 0);
-  return Number.isFinite(p[0]) ? (p[0] || 0) : 0;
+  if (!s) return 0;
+  const parts = s.split(':').map(n => Number.parseInt(n, 10));
+  if (parts.length === 3) {
+    const [h = 0, m = 0, sec = 0] = parts;
+    return safePart(h) * 3600 + safePart(m) * 60 + safePart(sec);
+  }
+  if (parts.length === 2) {
+    const [m = 0, sec = 0] = parts;
+    return safePart(m) * 60 + safePart(sec);
+  }
+  const [only = 0] = parts;
+  return safePart(only);
 }
 
 function byStart(a: { start_time: string }, b: { start_time: string }) {
   return timeToSeconds(a.start_time) - timeToSeconds(b.start_time);
+}
+
+function secondsToHHMMSS(totalSeconds: number): string {
+  const safe = Number.isFinite(totalSeconds) ? Math.max(0, Math.floor(totalSeconds)) : 0;
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const seconds = safe % 60;
+  const hh = hours.toString().padStart(2, '0');
+  const mm = minutes.toString().padStart(2, '0');
+  const ss = seconds.toString().padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+function sanitizePlayMarkers(rawMarkers: unknown[]): PlayMarker[] {
+  const markers: Array<{ raw: any; start: number; end: number }> = rawMarkers
+    .filter(value => value && typeof value === 'object')
+    .map((value: any) => {
+      const start = timeToSeconds(String(value.start_time ?? ''));
+      const end = timeToSeconds(String(value.end_time ?? ''));
+      return { raw: value, start, end };
+    });
+
+  markers.sort((a, b) => a.start - b.start);
+
+  const sanitized: PlayMarker[] = [];
+  const seenIds = new Set<string>();
+  let fallbackCounter = 1;
+  let previousEnd = 0;
+  const MIN_SEGMENT = 2; // seconds
+
+  for (const marker of markers) {
+    let start = Number.isFinite(marker.start) ? Math.max(0, Math.floor(marker.start)) : previousEnd;
+    let end = Number.isFinite(marker.end) ? Math.max(0, Math.floor(marker.end)) : start + MIN_SEGMENT;
+
+    if (start < previousEnd) {
+      start = previousEnd;
+    }
+
+    if (end <= start) {
+      end = start + MIN_SEGMENT;
+    }
+
+    const rawId = typeof marker.raw.play_id === 'string' && marker.raw.play_id.trim().length > 0
+      ? marker.raw.play_id.trim()
+      : `PLAY_${fallbackCounter}`;
+
+    let candidateId = rawId;
+    let suffix = 1;
+    while (seenIds.has(candidateId)) {
+      candidateId = `${rawId}_${suffix}`;
+      suffix += 1;
+    }
+    seenIds.add(candidateId);
+    fallbackCounter += 1;
+
+    const rawQuarter = marker.raw.quarter;
+    const quarter = typeof rawQuarter === 'number' && Number.isFinite(rawQuarter)
+      ? Math.max(0, Math.min(4, Math.trunc(rawQuarter)))
+      : null;
+
+    const rawClock = typeof marker.raw.game_clock === 'string' ? marker.raw.game_clock.trim() : null;
+    const offense = typeof marker.raw.offense_team === 'string' ? marker.raw.offense_team.trim() : undefined;
+    const defense = typeof marker.raw.defense_team === 'string' ? marker.raw.defense_team.trim() : undefined;
+    const notes = typeof marker.raw.notes === 'string' ? marker.raw.notes : undefined;
+    const confidence = typeof marker.raw.confidence === 'number' && Number.isFinite(marker.raw.confidence)
+      ? Math.min(1, Math.max(0, marker.raw.confidence))
+      : null;
+
+    const sanitizedMarker: PlayMarker = {
+      play_id: candidateId,
+      start_time: secondsToHHMMSS(start),
+      end_time: secondsToHHMMSS(Math.max(end, start + MIN_SEGMENT)),
+      quarter,
+      game_clock: rawClock && rawClock.length > 0 ? rawClock : null
+    };
+
+    if (offense && offense.length > 0) {
+      sanitizedMarker.offense_team = offense;
+    }
+    if (defense && defense.length > 0) {
+      sanitizedMarker.defense_team = defense;
+    }
+    if (notes) {
+      sanitizedMarker.notes = notes;
+    }
+    if (confidence !== null) {
+      sanitizedMarker.confidence = confidence;
+    }
+
+    sanitized.push(sanitizedMarker);
+    previousEnd = timeToSeconds(sanitizedMarker.end_time);
+  }
+
+  return sanitized;
 }
 
 /* === Model factory === */
@@ -483,7 +597,8 @@ Rules:
 
   const text = await readResponseText(genResult);
   const json = tryParseJSON(text) || {};
-  const plays = Array.isArray(json.plays) ? json.plays.slice().sort(byStart) : [];
+  const rawPlays = Array.isArray(json.plays) ? json.plays : [];
+  const plays = sanitizePlayMarkers(rawPlays);
 
   const overview: Pass1Overview = { plays, video_uri: videoUri };
   return overview;
