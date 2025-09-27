@@ -1,69 +1,204 @@
 // To run this code you need to install the following dependencies:
-// npm install @google/generative-ai dotenv mime
-// npm install -D @types/node typescript
+// npm install @google/genai mime
+// npm install -D @types/node
+import {
+  GoogleGenAI,
+  LiveServerMessage,
+  MediaResolution,
+  Modality,
+  Session,
+} from '@google/genai';
+import mime from 'mime';
+import { writeFile } from 'fs';
+const responseQueue: LiveServerMessage[] = [];
+let session: Session | undefined = undefined;
 
-import * as dotenv from 'dotenv';
-import { writeFileSync } from 'fs';
-import { FootballAnalysis } from './types';
-import { generatePDFReports } from './pdfGenerator';
-
-dotenv.config();
-
-function saveJsonFile(fileName: string, data: any) {
-  try {
-    const jsonString = JSON.stringify(data, null, 2);
-    writeFileSync(fileName, jsonString, 'utf8');
-    console.log(`\nFile ${fileName} saved to file system.`);
-  } catch (err) {
-    console.error(`Error writing file ${fileName}:`, err);
+async function handleTurn(): Promise<LiveServerMessage[]> {
+  const turn: LiveServerMessage[] = [];
+  let done = false;
+  while (!done) {
+    const message = await waitMessage();
+    turn.push(message);
+    if (message.serverContent && message.serverContent.turnComplete) {
+      done = true;
+    }
   }
+  return turn;
+}
+
+async function waitMessage(): Promise<LiveServerMessage> {
+  let done = false;
+  let message: LiveServerMessage | undefined = undefined;
+  while (!done) {
+    message = responseQueue.shift();
+    if (message) {
+      handleModelTurn(message);
+      done = true;
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  return message!;
+}
+
+const audioParts: string[] = [];
+function handleModelTurn(message: LiveServerMessage) {
+  if(message.serverContent?.modelTurn?.parts) {
+    const part = message.serverContent?.modelTurn?.parts?.[0];
+
+    if(part?.fileData) {
+      console.log(`File: ${part?.fileData.fileUri}`);
+    }
+
+    if (part?.inlineData) {
+      const fileName = 'audio.wav';
+      const inlineData = part?.inlineData;
+
+      audioParts.push(inlineData?.data ?? '');
+
+      const buffer = convertToWav(audioParts, inlineData.mimeType ?? '');
+      saveBinaryFile(fileName, buffer);
+    }
+
+    if(part?.text) {
+      console.log(part?.text);
+    }
+  }
+}
+
+function saveBinaryFile(fileName: string, content: Buffer) {
+  writeFile(fileName, content, 'utf8', (err) => {
+    if (err) {
+      console.error(`Error writing file ${fileName}:`, err);
+      return;
+    }
+    console.log(`Appending stream content to file ${fileName}.`);
+  });
+}
+
+interface WavConversionOptions {
+  numChannels : number,
+  sampleRate: number,
+  bitsPerSample: number
+}
+
+function convertToWav(rawData: string[], mimeType: string) {
+  const options = parseMimeType(mimeType);
+  const dataLength = rawData.reduce((a, b) => a + b.length, 0);
+  const wavHeader = createWavHeader(dataLength, options);
+  const buffer = Buffer.concat(rawData.map(data => Buffer.from(data, 'base64')));
+
+  return Buffer.concat([wavHeader, buffer]);
+}
+
+function parseMimeType(mimeType : string) {
+  const [fileType, ...params] = mimeType.split(';').map(s => s.trim());
+  const [_, format] = fileType.split('/');
+
+  const options : Partial<WavConversionOptions> = {
+    numChannels: 1,
+    bitsPerSample: 16,
+  };
+
+  if (format && format.startsWith('L')) {
+    const bits = parseInt(format.slice(1), 10);
+    if (!isNaN(bits)) {
+      options.bitsPerSample = bits;
+    }
+  }
+
+  for (const param of params) {
+    const [key, value] = param.split('=').map(s => s.trim());
+    if (key === 'rate') {
+      options.sampleRate = parseInt(value, 10);
+    }
+  }
+
+  return options as WavConversionOptions;
+}
+
+function createWavHeader(dataLength: number, options: WavConversionOptions) {
+  const {
+    numChannels,
+    sampleRate,
+    bitsPerSample,
+  } = options;
+
+  // http://soundfile.sapp.org/doc/WaveFormat
+
+  const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+  const blockAlign = numChannels * bitsPerSample / 8;
+  const buffer = Buffer.alloc(44);
+
+  buffer.write('RIFF', 0);                      // ChunkID
+  buffer.writeUInt32LE(36 + dataLength, 4);     // ChunkSize
+  buffer.write('WAVE', 8);                      // Format
+  buffer.write('fmt ', 12);                     // Subchunk1ID
+  buffer.writeUInt32LE(16, 16);                 // Subchunk1Size (PCM)
+  buffer.writeUInt16LE(1, 20);                  // AudioFormat (1 = PCM)
+  buffer.writeUInt16LE(numChannels, 22);        // NumChannels
+  buffer.writeUInt32LE(sampleRate, 24);         // SampleRate
+  buffer.writeUInt32LE(byteRate, 28);           // ByteRate
+  buffer.writeUInt16LE(blockAlign, 32);         // BlockAlign
+  buffer.writeUInt16LE(bitsPerSample, 34);      // BitsPerSample
+  buffer.write('data', 36);                     // Subchunk2ID
+  buffer.writeUInt32LE(dataLength, 40);         // Subchunk2Size
+
+  return buffer;
 }
 
 async function main() {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.error('Error: GEMINI_API_KEY not found in environment variables');
-    return;
-  }
+  const ai = new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY,
+  });
 
-  const videoUri = 'https://www.youtube.com/watch?v=OgMZTA19TEI';
+  const model = 'models/gemini-2.5-flash-native-audio-preview-09-2025'
 
-  console.log('Running multi-pass video analysis...');
-  try {
-    const { runMultiPass } = await import('./multiPassAnalyzer');
+  const config = {
+    responseModalities: [
+        Modality.AUDIO,
+    ],
+    mediaResolution: MediaResolution.MEDIA_RESOLUTION_MEDIUM,
+    speechConfig: {
+      voiceConfig: {
+        prebuiltVoiceConfig: {
+          voiceName: 'Zephyr',
+        }
+      }
+    },
+    contextWindowCompression: {
+        triggerTokens: '25600',
+        slidingWindow: { targetTokens: '12800' },
+    },
+  };
 
-    // You can change the model here: 'gemini-2.5-pro' or 'gemini-2.5-flash'
-    const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-    
-    const { analysis } = await runMultiPass(videoUri, apiKey, {
-      prefer: ['pass3', 'pass2', 'pass1'],
-      thresholds: { accept: 0.55, override: 0.7 }
-    }, modelName);
+  session = await ai.live.connect({
+    model,
+    callbacks: {
+      onopen: function () {
+        console.debug('Opened');
+      },
+      onmessage: function (message: LiveServerMessage) {
+        responseQueue.push(message);
+      },
+      onerror: function (e: ErrorEvent) {
+        console.debug('Error:', e.message);
+      },
+      onclose: function (e: CloseEvent) {
+        console.debug('Close:', e.reason);
+      },
+    },
+    config
+  });
 
-    console.log(`Parsed ${analysis.plays.length} plays after aggregation.`);
-    analysis.plays.forEach((play, i) => {
-      console.log(`- [${i + 1}] ${play.play_id} ${play.video_timestamps.start_time}–${play.video_timestamps.end_time} | ${play.play.play_type} | ${play.result.outcome}`);
-    });
+  session.sendClientContent({
+    turns: [
+      `INSERT_INPUT_HERE`
+    ]
+  });
 
-    // Save final analysis JSON
-    saveJsonFile('football_analysis.json', analysis as FootballAnalysis);
+  await handleTurn();
 
-    // Generate PDF reports (detailed and summary)
-    try {
-      const { detailedPath, summaryPath } = await generatePDFReports(analysis, {
-        outputPathDetailed: 'football_analysis.pdf',
-        outputPathSummary: 'football_analysis_summary.pdf',
-        reportTitle: 'Football Game Analysis Report'
-      });
-      console.log(`PDF reports generated:
-- Detailed: ${detailedPath}
-- Summary: ${summaryPath}`);
-    } catch (pdfErr) {
-      console.error('Failed to generate PDF reports:', pdfErr);
-    }
-  } catch (err) {
-    console.error('Multi-pass analysis failed:', err);
-  }
+  session.close();
 }
-
-main().catch(console.error);
+main();
